@@ -1,0 +1,6 @@
+{
+  "spreadsheetId": "TU_ID_DE_GOOGLE_SHEET_AQUI",
+  "timeout": 10000,
+  "batchSaveSize": 10,
+  "headless": false
+}
