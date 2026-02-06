@@ -7,18 +7,70 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 
-// Intentar cargar credenciales desde archivo
-let credsFromFile = null;
-try {
-    const credsPath = path.join(__dirname, 'creds.json');
-    if (fs.existsSync(credsPath)) {
-        credsFromFile = fs.readFileSync(credsPath, 'utf8');
-        console.log('✅ Archivo creds.json encontrado en la raíz del proyecto');
-    } else {
-        console.log('⚠️  Archivo creds.json no encontrado. Se usarán credenciales desde la interfaz.');
+// Función para cargar credenciales desde la carpeta credentials
+function loadCredentialsFromFolder() {
+    const credentialsDir = path.join(__dirname, 'credentials');
+    
+    try {
+        if (!fs.existsSync(credentialsDir)) {
+            console.log('⚠️  Carpeta credentials no encontrada. Se usarán credenciales desde la interfaz.');
+            return null;
+        }
+
+        const files = fs.readdirSync(credentialsDir);
+        const jsonFiles = files.filter(file => file.endsWith('.json'));
+        
+        if (jsonFiles.length === 0) {
+            console.log('⚠️  No hay archivos JSON en la carpeta credentials. Se usarán credenciales desde la interfaz.');
+            return null;
+        }
+
+        // Buscar el primer archivo JSON que contenga "service_account" o "creds"
+        let credsFile = jsonFiles.find(file => 
+            file.toLowerCase().includes('service') || 
+            file.toLowerCase().includes('creds') || 
+            file.toLowerCase().includes('google')
+        ) || jsonFiles[0];
+
+        const credsPath = path.join(credentialsDir, credsFile);
+        const credsContent = fs.readFileSync(credsPath, 'utf8');
+        
+        // Validar que sea un JSON válido
+        const parsedCreds = JSON.parse(credsContent);
+        
+        console.log(`✅ Credenciales cargadas desde: credentials/${credsFile}`);
+        return credsContent;
+        
+    } catch (error) {
+        console.log('⚠️  Error al leer credenciales desde carpeta:', error.message);
+        return null;
     }
-} catch (error) {
-    console.log('⚠️  Error al leer creds.json:', error.message);
+}
+
+// Cargar credenciales desde variables de entorno (prioridad para Railway)
+let credsFromFile = null;
+
+if (process.env.GOOGLE_CREDENTIALS_JSON) {
+    credsFromFile = process.env.GOOGLE_CREDENTIALS_JSON;
+    console.log('✅ Credenciales cargadas desde variable de entorno GOOGLE_CREDENTIALS_JSON');
+} else {
+    // Cargar credenciales desde la carpeta credentials (prioridad) o desde raíz (fallback)
+    credsFromFile = loadCredentialsFromFolder();
+    
+    // Si no se encontró en la carpeta, intentar desde la raíz (mantener compatibilidad)
+    if (!credsFromFile) {
+        try {
+            const credsPath = path.join(__dirname, 'creds.json');
+            if (fs.existsSync(credsPath)) {
+                credsFromFile = fs.readFileSync(credsPath, 'utf8');
+                console.log('✅ Archivo creds.json encontrado en la raíz del proyecto (fallback)');
+            } else {
+                console.log('⚠️  No se encontraron credenciales. Se usarán credenciales desde la interfaz.');
+            }
+        } catch (error) {
+            console.log('⚠️  Error al leer creds.json:', error.message);
+        }
+    }
 }
 
 // Intentar cargar configuración desde archivo
@@ -176,10 +228,23 @@ async function ejecutarBot(socketId, spreadsheetId, credsJson) {
 
         emitLog(socket, 'info', `📊 Cargadas ${filas.length} filas del sheet`);
 
-        // Iniciar navegador
+        // Iniciar navegador con configuración optimizada para Railway
         browser = await chromium.launch({ 
-            headless: true, // Siempre headless en producción
-            args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage']
+            headless: true,
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-setuid-sandbox',
+                '--disable-software-rasterizer',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-features=TranslateUI',
+                '--disable-ipc-flooding-protection',
+                '--single-process' // Para Railway
+            ]
         }); 
         const page = await browser.newPage();
         page.setDefaultTimeout(TIMEOUT_DEFAULT);
@@ -295,7 +360,17 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/api/creds-exists', (req, res) => {
-    res.json({ exists: credsFromFile !== null });
+    let source = 'No encontrado';
+    if (process.env.GOOGLE_CREDENTIALS_JSON) {
+        source = 'Variable de entorno GOOGLE_CREDENTIALS_JSON';
+    } else if (credsFromFile) {
+        source = 'Carpeta credentials o raíz';
+    }
+    
+    res.json({ 
+        exists: credsFromFile !== null,
+        source: source
+    });
 });
 
 app.get('/api/creds', (req, res) => {

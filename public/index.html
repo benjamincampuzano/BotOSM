@@ -507,6 +507,9 @@
                         id="creds" 
                         placeholder='{"type": "service_account", "project_id": "...", ...}'
                     ></textarea>
+                    <small style="color: var(--color-text-dim); font-size: 0.75rem; margin-top: 0.25rem; display: block;">
+                        💡 También puedes colocar tus credenciales JSON en la carpeta <code>./credentials</code> y se cargarán automáticamente
+                    </small>
                 </div>
 
                 <div class="config-status" id="configStatus" style="display: none;">
@@ -627,12 +630,12 @@
                     // Ocultar el campo de credenciales
                     credsGroup.style.display = 'none';
                     
-                    addLog('success', '✅ Credenciales cargadas desde creds.json');
+                    addLog('success', `✅ Credenciales cargadas automáticamente desde ${data.source}`);
                     
                     return credsData.creds;
                 }
             } catch (error) {
-                console.log('No se encontró creds.json, usando entrada manual');
+                console.log('No se encontraron credenciales, usando entrada manual');
             }
             return null;
         }
