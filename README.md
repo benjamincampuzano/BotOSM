@@ -85,42 +85,6 @@ npm start
 - `SPREADSHEET_ID=tu-sheet-id`  
 - `GOOGLE_CREDS` (contenido del JSON como string)  
 
-### Vercel
-
-1. Instala Vercel CLI:  
-
-```bash
-npm i -g vercel
-```
-
-2. Ejecuta:
-
-```bash
-vercel --prod
-```
-
-3. Configura las variables de entorno en el dashboard de Vercel  
-
-### Heroku
-
-1. Crea el app:
-
-```bash
-heroku create tu-app
-```
-
-2. Configura variables:
-
-```bash
-heroku config:set PORT=8080
-```
-
-3. Hace deploy:
-
-```bash
-git push heroku main
-```
-
 ## 📊 Uso
 
 1. Abre la aplicación en tu navegador  
