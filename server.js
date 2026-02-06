@@ -9,7 +9,8 @@ const fs = require('fs');
 
 // Función para cargar credenciales desde la carpeta credentials
 function loadCredentialsFromFolder() {
-    const credentialsDir = path.join(__dirname, 'credentials');
+    const credentialsDir = path.resolve(__dirname, 'credentials');
+    console.log(`🔍 Buscando carpeta credentials en: ${credentialsDir}`);
     
     try {
         if (!fs.existsSync(credentialsDir)) {
@@ -19,6 +20,7 @@ function loadCredentialsFromFolder() {
 
         const files = fs.readdirSync(credentialsDir);
         const jsonFiles = files.filter(file => file.endsWith('.json'));
+        console.log(`🔍 Archivos JSON encontrados: ${jsonFiles.length} - ${jsonFiles.join(', ')}`);
         
         if (jsonFiles.length === 0) {
             console.log('⚠️  No hay archivos JSON en la carpeta credentials. Se usarán credenciales desde la interfaz.');
@@ -60,7 +62,10 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
     // Si no se encontró en la carpeta, intentar desde la raíz (mantener compatibilidad)
     if (!credsFromFile) {
         try {
-            const credsPath = path.join(__dirname, 'creds.json');
+            const credsPath = path.resolve(__dirname, 'creds.json');
+            console.log(`🔍 Buscando creds.json en: ${credsPath}`);
+            console.log(`🔍 ¿Existe?: ${fs.existsSync(credsPath)}`);
+            
             if (fs.existsSync(credsPath)) {
                 credsFromFile = fs.readFileSync(credsPath, 'utf8');
                 console.log('✅ Archivo creds.json encontrado en la raíz del proyecto (fallback)');
@@ -76,7 +81,10 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
 // Intentar cargar configuración desde archivo
 let configFromFile = null;
 try {
-    const configPath = path.join(__dirname, 'config.json');
+    const configPath = path.resolve(__dirname, 'config.json');
+    console.log(`🔍 Buscando config.json en: ${configPath}`);
+    console.log(`🔍 ¿Existe?: ${fs.existsSync(configPath)}`);
+    
     if (fs.existsSync(configPath)) {
         const configContent = fs.readFileSync(configPath, 'utf8');
         configFromFile = JSON.parse(configContent);
@@ -148,50 +156,73 @@ async function resetearBusqueda(page, socket) {
 }
 
 async function procesarExpediente(page, codigo, socket) {
-    const campo = page.locator('div.ods-form-item', { hasText: 'Número de expediente' })
-        .locator('input.ods-input__inner')
-        .first();
-    
-    await campo.clear();
-    await campo.fill(codigo);
-    
-    const valorEscrito = await campo.inputValue();
-    if (valorEscrito !== codigo) {
-        throw new Error(`Valor no coincide: esperado "${codigo}", obtenido "${valorEscrito}"`);
-    }
-
-    const btnFiltros = page.getByRole('button', { name: /Aplicar filtros/i });
-    await btnFiltros.click();
-    
-    const btnExp = page.locator(`button:has-text("${codigo}")`);
+    emitLog(socket, 'info', `🔍 Procesando expediente: ${codigo}`);
     
     try {
-        await btnExp.waitFor({ state: 'visible', timeout: TIMEOUT_DEFAULT });
-        await btnExp.click();
-    } catch (error) {
-        const sinResultados = await page.locator('text=/sin resultados|no se encontraron/i').isVisible();
-        if (sinResultados) {
-            return { encontradas: [], error: 'Sin resultados en la búsqueda' };
+        // Esperar a que el campo de búsqueda esté disponible
+        const campo = page.locator('div.ods-form-item', { hasText: 'Número de expediente' })
+            .locator('input.ods-input__inner')
+            .first();
+        
+        await campo.waitFor({ state: 'visible', timeout: TIMEOUT_DEFAULT });
+        emitLog(socket, 'info', `✅ Campo de búsqueda encontrado para ${codigo}`);
+        
+        await campo.clear();
+        await campo.fill(codigo);
+        
+        const valorEscrito = await campo.inputValue();
+        if (valorEscrito !== codigo) {
+            throw new Error(`Valor no coincide: esperado "${codigo}", obtenido "${valorEscrito}"`);
         }
+        
+        emitLog(socket, 'info', `📝 Código ${codigo} ingresado correctamente`);
+
+        const btnFiltros = page.getByRole('button', { name: /Aplicar filtros/i });
+        await btnFiltros.waitFor({ state: 'visible', timeout: 5000 });
+        await btnFiltros.click();
+        emitLog(socket, 'info', `🔘 Filtros aplicados para ${codigo}`);
+        
+        const btnExp = page.locator(`button:has-text("${codigo}")`);
+        
+        try {
+            await btnExp.waitFor({ state: 'visible', timeout: TIMEOUT_DEFAULT });
+            await btnExp.click();
+            emitLog(socket, 'info', `🖱️ Botón del expediente ${codigo} clickeado`);
+        } catch (error) {
+            const sinResultados = await page.locator('text=/sin resultados|no se encontraron/i').isVisible();
+            if (sinResultados) {
+                emitLog(socket, 'warning', `⚠️ ${codigo}: Sin resultados en la búsqueda`);
+                return { encontradas: [], error: 'Sin resultados en la búsqueda' };
+            }
+            throw error;
+        }
+
+        // Esperar a que cargue el detalle del expediente
+        emitLog(socket, 'info', `⏳ Esperando detalles del expediente ${codigo}...`);
+        
+        await Promise.race([
+            page.waitForSelector('textarea.ods-textarea__inner', { state: 'attached', timeout: TIMEOUT_DEFAULT }),
+            page.waitForLoadState('networkidle', { timeout: TIMEOUT_DEFAULT })
+        ]);
+        
+        await page.waitForTimeout(500); // Pequeña pausa para asegurar que todo cargue
+
+        const [txtAreas, bodyTxt] = await Promise.all([
+            page.$$eval('textarea.ods-textarea__inner', els => els.map(e => e.value)),
+            page.textContent('body')
+        ]);
+        
+        const fullTxt = (bodyTxt + " " + txtAreas.join(" ")).toUpperCase();
+        const encontradas = PALABRAS_CLAVE.filter(p => fullTxt.includes(p.toUpperCase()));
+        
+        emitLog(socket, 'success', `✅ ${codigo}: ${encontradas.length} coincidencia(s) encontradas`);
+        
+        return { encontradas, error: null };
+        
+    } catch (error) {
+        emitLog(socket, 'error', `❌ Error procesando ${codigo}: ${error.message}`);
         throw error;
     }
-
-    await Promise.race([
-        page.waitForSelector('textarea.ods-textarea__inner', { state: 'attached', timeout: TIMEOUT_DEFAULT }),
-        page.waitForLoadState('networkidle', { timeout: TIMEOUT_DEFAULT })
-    ]);
-    
-    await page.waitForTimeout(500);
-
-    const [txtAreas, bodyTxt] = await Promise.all([
-        page.$$eval('textarea.ods-textarea__inner', els => els.map(e => e.value)),
-        page.textContent('body')
-    ]);
-    
-    const fullTxt = (bodyTxt + " " + txtAreas.join(" ")).toUpperCase();
-    const encontradas = PALABRAS_CLAVE.filter(p => fullTxt.includes(p.toUpperCase()));
-    
-    return { encontradas, error: null };
 }
 
 async function ejecutarBot(socketId, spreadsheetId, credsJson) {
@@ -228,13 +259,24 @@ async function ejecutarBot(socketId, spreadsheetId, credsJson) {
 
         emitLog(socket, 'info', `📊 Cargadas ${filas.length} filas del sheet`);
 
-        // Iniciar navegador con configuración optimizada para Railway
-        browser = await chromium.launch({ 
-            headless: true,
+        // Iniciar navegador con configuración adaptada al entorno
+        const isDevelopment = process.env.NODE_ENV !== 'production' || !process.env.RAILWAY_ENVIRONMENT;
+        
+        const launchOptions = {
+            headless: isDevelopment ? false : true, // Modo visible en desarrollo
             args: [
                 '--disable-blink-features=AutomationControlled',
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
+                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            ]
+        };
+        
+        // Agregar flags específicos para Railway solo en producción
+        if (!isDevelopment) {
+            launchOptions.args.push(
                 '--disable-gpu',
                 '--disable-setuid-sandbox',
                 '--disable-software-rasterizer',
@@ -243,14 +285,70 @@ async function ejecutarBot(socketId, spreadsheetId, credsJson) {
                 '--disable-renderer-backgrounding',
                 '--disable-features=TranslateUI',
                 '--disable-ipc-flooding-protection',
-                '--single-process' // Para Railway
-            ]
-        }); 
+                '--single-process'
+            );
+        }
+        
+        emitLog(socket, 'info', `🌐 Iniciando navegador en modo ${isDevelopment ? 'desarrollo (visible)' : 'producción (headless)'}`);
+        browser = await chromium.launch(launchOptions); 
         const page = await browser.newPage();
+        
+        // Configurar la página para evitar detección
+        await page.goto('about:blank'); // Navegar primero a una página en blanco
+        await page.addInitScript(() => {
+            // Ocultar propiedades de automatización
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+            });
+            
+            // Ocultar que es Chrome headless
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5],
+            });
+            
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['es-ES', 'es', 'en'],
+            });
+        });
+        
         page.setDefaultTimeout(TIMEOUT_DEFAULT);
         page.setDefaultNavigationTimeout(TIMEOUT_DEFAULT * 2);
 
-        await page.goto(URL_BASE, { waitUntil: 'domcontentloaded' });
+        // Logging de eventos de la página
+        page.on('console', msg => {
+            emitLog(socket, 'info', `🌐 Browser Console: ${msg.text()}`);
+        });
+        
+        page.on('pageerror', error => {
+            emitLog(socket, 'error', `🌐 Browser Error: ${error.message}`);
+        });
+
+        emitLog(socket, 'info', `🌐 Navegando a: ${URL_BASE}`);
+        
+        try {
+            await page.goto(URL_BASE, { 
+                waitUntil: 'domcontentloaded',
+                timeout: TIMEOUT_DEFAULT * 2 
+            });
+            
+            // Verificar que la página cargó correctamente
+            const title = await page.title();
+            const url = page.url();
+            
+            emitLog(socket, 'success', `✅ Página cargada - Título: ${title}`);
+            emitLog(socket, 'info', `🌐 URL actual: ${url}`);
+            
+            // Esperar un momento y verificar si hay elementos clave
+            await page.waitForTimeout(2000);
+            
+            const hasSearchInput = await page.locator('input.ods-input__inner').count() > 0;
+            emitLog(socket, 'info', `🔍 ¿Hay campos de búsqueda?: ${hasSearchInput ? 'Sí' : 'No'}`);
+            
+        } catch (error) {
+            emitLog(socket, 'error', `❌ Error al cargar página: ${error.message}`);
+            throw error;
+        }
+        
         emitLog(socket, 'success', '✅ Navegador iniciado - Por favor inicia sesión manualmente');
         
         // Esperar confirmación del usuario
